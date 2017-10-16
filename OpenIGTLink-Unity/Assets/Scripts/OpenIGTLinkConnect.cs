@@ -7,9 +7,15 @@ using System.Text;
 using System.Collections;
 using System.Threading;
 using System.Collections.Generic;
+
 //using System.Runtime.InteropServices;
 
-public class OpenIGTLinkConnect : MonoBehaviour {
+#if !UNITY_EDITOR
+    using Windows.Networking.Sockets;
+#endif
+
+public class NewOpenIGTLinkUnity : MonoBehaviour
+{
 
     public int scaleMultiplier = 1000; // Metres to millimetres
 
@@ -27,8 +33,21 @@ public class OpenIGTLinkConnect : MonoBehaviour {
     private string crcPolynomialBinary = "10100001011110000111000011110101110101001111010100011011010010011";
     private ulong crcPolynomial;
 
+#if !UNITY_EDITOR
+    private bool _useUWP = true;
+    //create TCP Client
+    private Windows.Networking.Sockets.StreamSocket socket;
+    private Task exchangeTask;
+#endif
+
+#if UNITY_EDITOR
+    private bool _useUWP = false;
     private Socket socket;
     private IPEndPoint remoteEP;
+    private Thread exchangeThread;
+#endif
+
+
 
     // ManualResetEvent instances signal completion.
     private static ManualResetEvent connectDone = new ManualResetEvent(false);
@@ -41,7 +60,8 @@ public class OpenIGTLinkConnect : MonoBehaviour {
     private bool connectionStarted = false;
 
     // Use this for initialization
-    void Start () {
+    void Start()
+    {
         // Initialize CRC Generator
         crcGenerator = new CRC64();
         crcPolynomial = Convert.ToUInt64(crcPolynomialBinary, 2);
@@ -63,8 +83,10 @@ public class OpenIGTLinkConnect : MonoBehaviour {
     private void StartupClient()
     {
         // Attempt to Connect
+#if UNITY_EDITOR
         try
         {
+
             // Establish the remote endpoint for the socket.
             IPAddress ipAddress = IPAddress.Parse(ipString);
             remoteEP = new IPEndPoint(ipAddress, port);
@@ -72,7 +94,7 @@ public class OpenIGTLinkConnect : MonoBehaviour {
             // Create a TCP/IP  socket.
             socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             socket.Blocking = false;
-            
+
             try
             {
                 // Connect the socket to the remote endpoint. Catch any errors.
@@ -91,6 +113,26 @@ public class OpenIGTLinkConnect : MonoBehaviour {
         {
             Debug.Log(String.Format(e.ToString()));
         }
+
+#else // !UNITY_EDITOR
+        try
+        {
+            socket = new Windows.Networking.Sockets.StreamSocket();
+            Windows.Networking.HostName serverHost = new Windows.Networking.HostName(ipAddress);
+            await socket.ConnectAsync(serverHost, port);
+
+            //Stream streamOut = socket.OutputStream.AsStreamForWrite();
+            //Stream streamIn = socket.InputStream.AsStreamForRead();
+            
+            connectionStarted = true;
+            StartCoroutine(Receive());
+            Debug.Log(String.Format("Ready to receive data"));   
+        }
+        catch (Exception e)
+        {
+            Debug.Log(String.Format(e.ToString()));
+        }
+#endif
     }
 
     private void ConnectCallback(IAsyncResult ar)
@@ -151,8 +193,14 @@ public class OpenIGTLinkConnect : MonoBehaviour {
     void OnApplicationQuit()
     {
         // Release the socket.
+
+#if UNITY_EDITOR
         socket.Shutdown(SocketShutdown.Both);
         socket.Close();
+#else
+        socket.Dispose();
+        socket = null;
+#endif
     }
 
     IEnumerator Receive()
@@ -163,16 +211,26 @@ public class OpenIGTLinkConnect : MonoBehaviour {
             //yield return new WaitForSeconds(1.0f);
             yield return null;
 
-
+#if UNITY_EDITOR
             if (socket.Poll(0, SelectMode.SelectRead))
             {
                 Receive(socket);
             }
+#else
+            if(..... //TODO: look for polling command
+            {
+                Receive(socket);
+            }
+#endif
         }
     }
 
     // -------------------- Receive -------------------- 
+#if UNITY_EDITOR
     private void Receive(Socket client)
+#else
+    private void Receive(StreamSocket client)
+#endif
     {
         try
         {
@@ -191,8 +249,15 @@ public class OpenIGTLinkConnect : MonoBehaviour {
 
     private void ReceiveStart(StateObject state)
     {
+#if UNITY_EDITOR
         Socket client = state.workSocket;
         client.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0, new AsyncCallback(ReceiveCallback), state);
+#else
+        StreamSocket client = state.workSocket;
+        Stream streamIn = client.InputStream.AsStreamForRead();
+        var dataReader = new Windows.Storage.Streams.DataReader(streamIn);
+        streamIn.I
+#endif
     }
 
     private void ReceiveCallback(IAsyncResult ar)
@@ -205,7 +270,7 @@ public class OpenIGTLinkConnect : MonoBehaviour {
             Socket client = state.workSocket;
 
             // Read data from the remote device.
-            int bytesRead = client.EndReceive(ar);
+            int bytesRead = client.EndReceive(ar);  //returns number of bytes read
 
             // As far as I can tell, Unity will not let the callback occur with 0 bytes to read, so I cannot use a 0 bytes left method to determine ending, must read the data type and size from the Header
             // TODO: Current workaround: adding check for a full buffer of transforms (divisible by 106), this may fail with other data types, must make overflow buffer work as well
@@ -252,7 +317,7 @@ public class OpenIGTLinkConnect : MonoBehaviour {
                         }
                         state.headerRead = true;
                     }
-                   
+
                     if (state.totalBytesRead == state.dataSize)
                     {
                         // All the data has arrived; put it in response.
@@ -324,7 +389,8 @@ public class OpenIGTLinkConnect : MonoBehaviour {
         foreach (GameObject gameObject in GameObjects)
         {
             // Could be a bit more efficient
-            if (gameObject.name.Length > 20){
+            if (gameObject.name.Length > 20)
+            {
                 objectName = gameObject.name.Substring(0, 20);
             }
             else
@@ -339,7 +405,7 @@ public class OpenIGTLinkConnect : MonoBehaviour {
                 byte[] matrixBytes = new byte[4];
                 float[] m = new float[12];
                 for (int i = 0; i < 12; i++)
-                { 
+                {
                     Buffer.BlockCopy(data, 58 + i * 4, matrixBytes, 0, 4);
                     if (BitConverter.IsLittleEndian)
                     {
@@ -347,7 +413,7 @@ public class OpenIGTLinkConnect : MonoBehaviour {
                     }
 
                     m[i] = BitConverter.ToSingle(matrixBytes, 0);
-                    
+
                 }
 
                 // Slicer units are in millimeters, Unity is in meters, so convert accordingly
@@ -651,14 +717,19 @@ public class CRC64
         return current ^ final;
 
     }
- 
+
 }
 
 // Receive Object
 public class StateObject
 {
+
+#if UNITY_EDITOR
     // Client socket.
     public Socket workSocket = null;
+#else
+    public StreamSocket workSocket = null;
+#endif
     // Size of receive buffer.
     public const int BufferSize = 4194304;
     // Receive buffer.
@@ -667,7 +738,7 @@ public class StateObject
     //public StringBuilder sb = new StringBuilder();
     public List<Byte> byteList = new List<Byte>();
     // OpenIGTLink Data Type
-    public enum DataTypes {IMAGE = 0, TRANSFORM};
+    public enum DataTypes { IMAGE = 0, TRANSFORM };
     public DataTypes dataType;
     // Header read or not
     public bool headerRead = false;
