@@ -22,7 +22,7 @@ public class OpenIGTLinkUnityConnect : MonoBehaviour
     public int scaleMultiplier = 1000; // Metres to millimetres
 
     //Set from config.txt, which is located in the project folder when run from the editor
-    public string ipString = "127.0.0.1";
+    public string ipString = "10.212.17";
     public int port = 18944;
     public GameObject[] GameObjects;
     public int msDelay = 33;
@@ -60,10 +60,10 @@ public class OpenIGTLinkUnityConnect : MonoBehaviour
         FileInfo iniFile = new FileInfo("config.txt");
         StreamReader reader = iniFile.OpenText();
         string text = reader.ReadLine();
-        if (text != null) ipString = text;
+        //if (text != null) ipString = text;
 
         text = reader.ReadLine();
-        if (text != null) port = int.Parse(text);
+        //if (text != null) port = int.Parse(text);
 
         // TODO: Connect on prompt rather than application start
         OpenIGTLinkConnection = new TCPClient(ipString, port);
@@ -134,7 +134,7 @@ public class OpenIGTLinkUnityConnect : MonoBehaviour
             //do nothing until there is data to be read
             if (byteListCount == 0)
             {
-                Delay(50);
+                //Thread.Sleep(50);
                 continue;
             }
 
@@ -279,7 +279,39 @@ public class OpenIGTLinkUnityConnect : MonoBehaviour
 
                 Vector3 translation = matrix.GetColumn(3);
                 gameObject.transform.localPosition = new Vector3(-translation.x, translation.y, translation.z);
-                Vector3 eulerAngles = matrix.GetRotation().eulerAngles;
+
+
+                //decompose rotation matrix into euler angles
+                Vector3 eulerAngles = new Vector3(0.0f, 0.0f, 0.0f);
+                Vector4 row0 = matrix.GetRow(0);
+                Vector4 row1 = matrix.GetRow(1);
+                Vector4 row2 = matrix.GetRow(2);
+
+                eulerAngles.x = Mathf.Asin(row2[1]);
+
+                if (eulerAngles.x < (Mathf.PI / 2))
+                {
+                    if (eulerAngles.x > (-Mathf.PI / 2))
+                    {
+                        eulerAngles.z = Mathf.Atan2(-row0[1], row1[1]);
+                        eulerAngles.y = Mathf.Atan2(-row2[0], row2[2]);
+                    }
+                    else
+                    {
+                        eulerAngles.z = -Mathf.Atan2(-row0[2], row0[0]);
+                        eulerAngles.y = 0;
+                    }
+                }
+                else
+                {
+                    eulerAngles.z = Mathf.Atan2(row0[2], row0[0]);
+                    eulerAngles.y = 0;
+                }
+
+                //convert to degrees
+                eulerAngles = eulerAngles * Mathf.Rad2Deg;
+
+                //Vector3 eulerAngles = matrix.rotation.eulerangles;
                 gameObject.transform.localRotation = Quaternion.Euler(eulerAngles.x, -eulerAngles.y, -eulerAngles.z);
             }
         }
@@ -449,8 +481,7 @@ public class OpenIGTLinkUnityConnect : MonoBehaviour
         {
             inputString = inputString.Substring(0, sizeInBytes);
         }
-
-        byte[] ba = Encoding.Default.GetBytes(inputString);
+        byte[] ba = Encoding.ASCII.GetBytes(inputString);
         string hexString = BitConverter.ToString(ba);
         hexString = hexString.Replace("-", "");
         hexString = hexString.PadRight(sizeInBytes * 2, '0');
@@ -558,7 +589,7 @@ public class ConnectionInfoStateObject
     //public StringBuilder sb = new StringBuilder();
     public List<Byte> byteList = new List<Byte>();
     // OpenIGTLink Data Type
-    public enum DataTypes { IMAGE = 0, TRANSFORM, POLYDATA };
+    public enum DataTypes { IMAGE = 0, TRANSFORM };
     public DataTypes dataType;
     // Header read or not
     public bool headerRead = false;
@@ -635,13 +666,14 @@ public class TCPClient
             //not a successful connection
             connected = false;
         }
-        
+
 #else
             try
             {
                 socket = new Windows.Networking.Sockets.StreamSocket();
                 Windows.Networking.HostName serverHost = new Windows.Networking.HostName(hostName);
-                await socket.ConnectAsync(serverHost, port);
+                socket.ConnectAsync(serverHost, port.ToString());
+                //await socket.ConnectAsync(serverHost, port.ToString());
 
                 streamOut = socket.OutputStream.AsStreamForWrite();
                 writer = new StreamWriter(streamOut) { AutoFlush = true };
@@ -745,7 +777,15 @@ public class TCPClient
 #else
             //read data and determine number of bytes read
             byte[] buffer = new byte[BufferSize];
-            reader.Read(buffer, 0, BufferSize);
+            char[] tempBuffer = null;
+            List<byte> byteList = null;
+            reader.Read(tempBuffer, 0, BufferSize);
+            //store char[] as byte[]
+            foreach (char singleChar in tempBuffer)
+            {
+                byteList.AddRange(BitConverter.GetBytes(singleChar));
+            }
+            buffer = byteList.ToArray();
 
             //copy data from buffer, append to byteList
             byte[] bytesRead = new Byte[buffer.GetLength(0)];
@@ -758,7 +798,10 @@ public class TCPClient
             while (SendMessageQueue.Count > 0) //if there is a messge to send
             {
                 //dequeue and write message to stream
-                writer.Write(SendMessageQueue.Dequeue(), 0, (SendMessageQueue.Dequeue()).Length);
+                byte[] dequeuedBytes = SendMessageQueue.Dequeue();
+                string tempString = dequeuedBytes.ToString();
+                char[] tempChar = tempString.ToCharArray();
+                writer.Write(tempChar, 0, (SendMessageQueue.Dequeue()).Length);
             }
 #endif
 
